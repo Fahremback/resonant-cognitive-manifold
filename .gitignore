@@ -1,0 +1,39 @@
+# Compilação e Build
+/build/
+/bin/
+/lib/
+/out/
+*.exe
+*.dll
+*.so
+*.dylib
+*.pdb
+*.obj
+*.o
+
+# Arquivos de Dados Gigantes (1.3GB+)
+*.bin
+/nodes.bin
+/edges.bin
+
+# Python e Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# IDEs e Ferramentas
+.vscode/
+.idea/
+*.suo
+*.user
+*.sln
+*.vcxproj
+*.filters
+
+# Arquivos gerados localmente
+/snake.py
