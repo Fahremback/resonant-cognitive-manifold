@@ -1,149 +1,118 @@
 #include "projector.hpp"
-#include "code_tokenizer.hpp"
-#include <iostream>
-#include <cctype>
+#include <cstring>
 #include <cmath>
 
 namespace rcm {
 
-Projector::Projector() {}
-Projector::~Projector() {}
-
-std::string Projector::sanitize(const std::string& word) const {
-    // Retorna a palavra/token inalterada para preservar a sintaxe de código original
-    return word;
+Projector::Projector(int input_dim, int rank) 
+    : input_dim(input_dim), rank(rank) {
+    
+    // Alocação de matrizes U e V
+    U = new float[input_dim * rank];
+    V = new float[rank * input_dim];
+    temp_buffer = new float[rank * rank];
+    
+    // Inicialização ortogonal (QR simplificado)
+    std::memset(U, 0, input_dim * rank * sizeof(float));
+    std::memset(V, 0, rank * input_dim * sizeof(float));
+    
+    // Inicialização aleatória com normalização
+    for (int i = 0; i < input_dim * rank; i++) {
+        U[i] = ((float)rand() / RAND_MAX - 0.5f) * 2.0f / sqrtf(input_dim);
+    }
+    
+    for (int i = 0; i < rank * input_dim; i++) {
+        V[i] = ((float)rand() / RAND_MAX - 0.5f) * 2.0f / sqrtf(rank);
+    }
+    
+    orthogonalize_stiefel();
 }
 
-bool Projector::initialize(const SSDStorage& storage) {
-    name_to_id_.clear();
-    id_to_name_.clear();
-    id_to_category_.clear();
+Projector::~Projector() {
+    delete[] U;
+    delete[] V;
+    delete[] temp_buffer;
+}
 
-    const DiskNode* nodes = storage.get_nodes_ptr();
-    size_t count = storage.get_node_count();
-
-    if (!nodes || count == 0) {
-        std::cerr << "[Projector] Erro: Ponteiro de nos do SSD invalido ou banco vazio.\n";
-        return false;
-    }
-
-    for (size_t i = 0; i < count; ++i) {
-        std::string name_str(nodes[i].name);
-        std::string clean_name = sanitize(name_str);
-        if (!clean_name.empty()) {
-            name_to_id_[clean_name] = nodes[i].id;
-            id_to_name_[nodes[i].id] = name_str; 
-            id_to_category_[nodes[i].id] = std::string(nodes[i].category);
+void Projector::project(float* input, float* output) {
+    // Projeção LoRA: output = V * (U^T * input)
+    // Passo 1: projected = U^T * input (rank dims)
+    float* projected = temp_buffer;
+    for (int r = 0; r < rank; r++) {
+        projected[r] = 0.0f;
+        for (int d = 0; d < input_dim; d++) {
+            projected[r] += U[d * rank + r] * input[d];
         }
     }
-
-    return true;
+    
+    // Passo 2: output = V * projected (input_dim dims)
+    for (int d = 0; d < input_dim; d++) {
+        output[d] = 0.0f;
+        for (int r = 0; r < rank; r++) {
+            output[d] += V[r * input_dim + d] * projected[r];
+        }
+    }
 }
 
-void Projector::text_to_seeds(const std::string& text, 
-                               std::vector<uint64_t>& out_seeds, 
-                               std::vector<std::vector<float>>& out_inputs) const {
-    out_seeds.clear();
-    out_inputs.clear();
+void Projector::update_weights(const float* gradient, float learning_rate) {
+    // Update Hebbiano simples com regularização
+    for (int i = 0; i < input_dim * rank; i++) {
+        U[i] += learning_rate * gradient[i % input_dim];
+        V[i] += learning_rate * gradient[i % input_dim];
+    }
+    
+    // Aplicar regularização de Stiefel periodicamente
+    orthogonalize_stiefel();
+}
 
-    // Utiliza o CodeTokenizer para separar em tokens sintáticos válidos de Python
-    std::vector<std::string> words = CodeTokenizer::tokenize(text);
-    for (const auto& w : words) {
-        std::string clean = sanitize(w);
-        uint64_t target_id = 0;
-        auto it = name_to_id_.find(clean);
-        if (it != name_to_id_.end()) {
-            target_id = it->second;
-        } else {
-            // Fallback para minúsculas (útil para tolerância a maiúsculas em prompts)
-            std::string lower_clean = clean;
-            std::transform(lower_clean.begin(), lower_clean.end(), lower_clean.begin(), [](unsigned char c) {
-                return static_cast<char>(std::tolower(c));
-            });
-            auto it_lower = name_to_id_.find(lower_clean);
-            if (it_lower != name_to_id_.end()) {
-                target_id = it_lower->second;
+void Projector::orthogonalize_stiefel() {
+    // Gram-Schmidt simplificado para manter ortogonalidade de U
+    for (int r = 0; r < rank; r++) {
+        // Normalizar coluna r
+        float norm = 0.0f;
+        for (int d = 0; d < input_dim; d++) {
+            norm += U[d * rank + r] * U[d * rank + r];
+        }
+        norm = sqrtf(norm);
+        
+        if (norm > 1e-6f) {
+            for (int d = 0; d < input_dim; d++) {
+                U[d * rank + r] /= norm;
             }
         }
-
-        if (target_id != 0) {
-            if (std::find(out_seeds.begin(), out_seeds.end(), target_id) == out_seeds.end()) {
-                out_seeds.push_back(target_id);
-                // Inicializa o vetor de excitação com 1.0 no primeiro elemento (t=0)
-                std::vector<float> input_vec(STATE_DIM, 0.0f);
-                input_vec[0] = 1.0f;
-                out_inputs.push_back(input_vec);
+        
+        // Ortogonalizar contra colunas anteriores
+        for (int prev_r = 0; prev_r < r; prev_r++) {
+            float dot = 0.0f;
+            for (int d = 0; d < input_dim; d++) {
+                dot += U[d * rank + r] * U[d * rank + prev_r];
             }
-        }
-    }
-}
-
-struct ProjectedConcept {
-    std::string name;
-    uint64_t global_id;
-    float amplitude;
-    uint32_t peak_phase;
-};
-
-std::vector<std::pair<std::string, float>> Projector::project_states(
-    const std::vector<float>& mus, 
-    const std::vector<uint64_t>& local_to_global,
-    const std::vector<uint64_t>& input_seeds
-) const {
-    std::vector<std::pair<std::string, float>> projections;
-    size_t active_nodes = local_to_global.size();
-
-    // Para cada fase d, encontra qual nó (excluindo os de prompt) possui a maior ativação
-    for (uint32_t d = 0; d < STATE_DIM; ++d) {
-        float max_val = 0.0f;
-        uint64_t best_g_id = 0;
-
-        for (size_t i = 0; i < active_nodes; ++i) {
-            uint64_t g_id = local_to_global[i];
             
-            // Ignora nós de prompt no output gerado
-            auto cat_it = id_to_category_.find(g_id);
-            if (cat_it != id_to_category_.end() && cat_it->second == "prompt") {
-                continue;
-            }
-
-            float val = mus[i * STATE_DIM + d];
-            if (val > max_val) {
-                max_val = val;
-                best_g_id = g_id;
-            }
-        }
-
-        // Se a ativação máxima nessa fase for significativa, projeta o token correspondente
-        if (max_val > 0.05f && best_g_id != 0) {
-            auto it = id_to_name_.find(best_g_id);
-            if (it != id_to_name_.end()) {
-                auto cat_it = id_to_category_.find(best_g_id);
-                std::string cat_str = (cat_it != id_to_category_.end() && !cat_it->second.empty()) ? cat_it->second : "termo";
-                std::string display_name = it->second + " (" + cat_str + ") [t=" + std::to_string(d) + "]";
-                projections.push_back({display_name, max_val});
+            for (int d = 0; d < input_dim; d++) {
+                U[d * rank + r] -= dot * U[d * rank + prev_r];
             }
         }
     }
-
-    return projections;
 }
 
-std::string Projector::build_sentence(const std::vector<std::pair<std::string, float>>& projections, const SSDStorage& storage) const {
-    if (projections.empty()) return "";
-
-    std::vector<std::string> tokens;
-    for (size_t i = 0; i < projections.size(); ++i) {
-        std::string raw_name = projections[i].first;
-        size_t paren = raw_name.find(" (");
-        if (paren != std::string::npos) {
-            raw_name = raw_name.substr(0, paren);
+float Projector::compute_orthogonality_error() {
+    // Calcula ||U^T * U - I||_F
+    float error = 0.0f;
+    
+    for (int r1 = 0; r1 < rank; r1++) {
+        for (int r2 = 0; r2 < rank; r2++) {
+            float dot = 0.0f;
+            for (int d = 0; d < input_dim; d++) {
+                dot += U[d * rank + r1] * U[d * rank + r2];
+            }
+            
+            float target = (r1 == r2) ? 1.0f : 0.0f;
+            float diff = dot - target;
+            error += diff * diff;
         }
-        tokens.push_back(raw_name);
     }
-
-    // Reconstrói o código Python usando o analisador léxico reverso
-    return CodeTokenizer::detokenize(tokens);
+    
+    return sqrtf(error);
 }
 
 } // namespace rcm

@@ -2,57 +2,49 @@
 #include "common.hpp"
 #include <string>
 #include <vector>
+#include <memory>
 #include <unordered_map>
-#include <windows.h>
 
 namespace rcm {
 
 class SSDStorage {
 public:
-    SSDStorage();
+    SSDStorage(const std::string& base_path);
     ~SSDStorage();
-
-    // Abre e mapeia os arquivos binários do hipergrafo (nós e arestas)
-    bool open_db(const std::string& nodes_path, const std::string& edges_path);
     
-    // Fecha as conexões e libera mapeamentos de memória
-    void close_db();
-
-    // Busca um nó individual no hipergrafo
-    bool get_node(uint64_t node_id, DiskNode& out_node) const;
-
-    // Busca as arestas associadas a um nó específico
-    bool get_edges(const DiskNode& node, std::vector<DiskEdge>& out_edges) const;
-
-    // Utilitário para popular ou reescrever o grafo binário no SSD
-    bool write_graph(const std::vector<DiskNode>& nodes, const std::vector<DiskEdge>& edges);
-
-    // Estatísticas e ponteiros de baixo nível para aceleração
-    size_t get_node_count() const { return node_count_; }
-    size_t get_edge_count() const { return edge_count_; }
+    // Inicialização do armazenamento de pesos virtuais
+    void initialize_virtual_params(size_t total_params);
     
-    const DiskNode* get_nodes_ptr() const { return nodes_ptr_; }
-    const DiskEdge* get_edges_ptr() const { return edges_ptr_; }
-
+    // Leitura Assíncrona de Blocos (Simulação GPUDirect)
+    void read_block_async(uint64_t block_id, float* destination, size_t count);
+    void wait_read_complete();
+    
+    // Escrita de Pesos Atualizados (Checkpoints)
+    void write_block(uint64_t block_id, const float* source, size_t count);
+    
+    // Mapeamento de Índice de Ressonância
+    uint64_t get_block_for_concept(int concept_id);
+    void update_resonance_index(int concept_id, uint64_t block_id);
+    
+    // Estatísticas
+    size_t get_total_blocks() const { return total_blocks; }
+    size_t get_bytes_read() const { return bytes_read; }
+    size_t get_bytes_written() const { return bytes_written; }
+    
 private:
-    HANDLE nodes_file_ = INVALID_HANDLE_VALUE;
-    HANDLE edges_file_ = INVALID_HANDLE_VALUE;
-    HANDLE nodes_mapping_ = NULL;
-    HANDLE edges_mapping_ = NULL;
-
-    DiskNode* nodes_ptr_ = nullptr;
-    DiskEdge* edges_ptr_ = nullptr;
-
-    size_t nodes_size_ = 0;
-    size_t edges_size_ = 0;
-    size_t node_count_ = 0;
-    size_t edge_count_ = 0;
-
-    // Índice rápido na RAM para mapear ID -> Posição no array mapeado
-    std::unordered_map<uint64_t, size_t> node_id_to_index_;
-
-    void build_index();
-    void cleanup();
+    std::string base_path;
+    size_t total_params;
+    size_t total_blocks;
+    size_t bytes_read;
+    size_t bytes_written;
+    
+    // Arquivo mapeado em memória para alta performance
+    int fd;
+    void* mapped_ptr;
+    size_t mapped_size;
+    
+    // Índice de ressonância (conceito -> bloco SSD)
+    std::unordered_map<int, uint64_t> resonance_index;
 };
 
 } // namespace rcm

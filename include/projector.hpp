@@ -1,43 +1,34 @@
 #pragma once
 #include "common.hpp"
-#include "ssd_storage.hpp"
-#include <string>
 #include <vector>
-#include <unordered_map>
-#include <algorithm>
-#include <sstream>
 
 namespace rcm {
 
 class Projector {
 public:
-    Projector();
+    Projector(int input_dim, int rank);
     ~Projector();
-
-    // Varre o banco de nós no SSD para construir a tabela de tradução de strings <-> IDs
-    bool initialize(const SSDStorage& storage);
-
-    // Converte a string de entrada do usuário em seeds de ressonância
-    void text_to_seeds(const std::string& text, 
-                       std::vector<uint64_t>& out_seeds, 
-                       std::vector<std::vector<float>>& out_inputs) const;
-
-    // Traduz o manifold de ativação da GPU em uma lista de termos ordenados por ressonância
-    std::vector<std::pair<std::string, float>> project_states(
-        const std::vector<float>& mus, 
-        const std::vector<uint64_t>& local_to_global,
-        const std::vector<uint64_t>& input_seeds
-    ) const;
-
-    // Constrói uma sentença contínua baseada no sequenciamento de fases e regras gramaticais
-    std::string build_sentence(const std::vector<std::pair<std::string, float>>& projections, const SSDStorage& storage) const;
-
+    
+    // Projeção LoRA com regularização de Stiefel
+    void project(float* input, float* output);
+    void update_weights(const float* gradient, float learning_rate);
+    
+    // Regularização de Ortogonalidade (Stiefel Manifold)
+    void orthogonalize_stiefel();
+    float compute_orthogonality_error();
+    
+    // Acesso aos pesos U e V (baixo posto)
+    float* get_U() { return U; }
+    float* get_V() { return V; }
+    
 private:
-    std::unordered_map<std::string, uint64_t> name_to_id_;
-    std::unordered_map<uint64_t, std::string> id_to_name_;
-    std::unordered_map<uint64_t, std::string> id_to_category_;
-
-    std::string sanitize(const std::string& word) const;
+    int input_dim;
+    int rank;
+    float* U; // Matriz input_dim x rank
+    float* V; // Matriz rank x input_dim
+    
+    // Buffers temporários para cálculo de projeção
+    float* temp_buffer;
 };
 
 } // namespace rcm

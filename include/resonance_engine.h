@@ -1,38 +1,50 @@
 #pragma once
 #include "common.hpp"
-#include "vram_cache.hpp"
-#include <vector>
-#include <utility>
+#include <cuda_runtime.h>
 
 namespace rcm {
 
 class ResonanceEngine {
 public:
-    ResonanceEngine();
+    ResonanceEngine(int num_nodes, int state_dim);
     ~ResonanceEngine();
-
-    // Executa a otimização de minimização de energia livre variacional (F) na GPU em 8D
-    ResonanceStats run_resonance(VRAMCache& vram_cache, 
-                                 float alpha = 0.02f, 
-                                 uint32_t max_iterations = 200, 
-                                 float tolerance = 1e-5f);
-
-    // Executa a calibragem dos pesos sinápticos via Hebbian Learning preditivo local na GPU em 8D
-    bool run_hebbian_learning(VRAMCache& vram_cache, 
-                               float learning_rate = 0.01f, 
-                               float weight_decay = 0.001f);
-
-    // Detecta pares de conceitos altamente correlacionados usando a GPU para consolidar em chunks no Sleep
-    std::vector<std::pair<uint64_t, uint64_t>> find_correlated_chunks(VRAMCache& vram_cache, 
-                                                                       float threshold = 0.9f);
-
+    
+    // Inicialização e Configuração
+    void initialize_weights_orthogonal();
+    void set_gamma(float gamma);
+    
+    // Kernels CUDA Principais
+    void run_hebbian_learning(const float* activations, const float* errors, int batch_size);
+    void compute_gradients_csr(const CSRGraph& graph, float* gradients);
+    void sleep_chunking(int chunk_id, float phase_coupling_target);
+    
+    // Métricas e Telemetria
+    float compute_stiefel_error();
+    int get_effective_rank();
+    void print_memory_stats();
+    
+    // Acesso a dados na GPU
+    float* get_device_mu() { return d_mu; }
+    float* get_device_U() { return d_U; }
+    float* get_device_V() { return d_V; }
+    
 private:
-    float* d_grad_ = nullptr;             // Buffer de gradientes temporário na GPU (tamanho nodes_count * STATE_DIM)
-    float* d_free_energy_ = nullptr;      // Buffer de acumulação de energia livre na GPU
-    size_t allocated_nodes_ = 0;
-
-    void ensure_buffers(size_t nodes_count);
-    void free_buffers();
+    int num_nodes;
+    int state_dim;
+    float gamma;
+    
+    // Ponteiros para memória na GPU
+    float* d_mu;
+    float* d_sigma;
+    float* d_U;
+    float* d_V;
+    float* d_grad;
+    
+    // Constantes na GPU
+    static __constant__ float d_gamma_const;
+    
+    // Buffers temporários
+    float* h_temp_buffer;
 };
 
 } // namespace rcm
